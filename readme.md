@@ -26,9 +26,13 @@ Supports advanced NLP features, emoji handling, and customizable preprocessing.
 
 ## Usage
 
-1. **Install requirements:**
+1.1 **Install requirements:**
     ```
     pip install -r requirements.txt
+    ```
+1.2 **Install spacy models:**
+    ```
+    python setup_spacy.py
     ```
 
 2. **Run the dashboard:**
