@@ -1,0 +1,8 @@
+streamlit
+pandas
+spacy
+wordcloud
+matplotlib
+scikit-learn
+numpy
+emoji
