@@ -45,32 +45,22 @@ def is_emoji(token_text):
     return any(char in emoji.EMOJI_DATA for char in token_text)
 
 @st.cache_data(show_spinner="Processing text...")
-def preprocess_text(all_text, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name):
-    all_tokens = []
-    all_text = " ".join(texts)
-    doc = nlp(all_text)
+def preprocess_text(
+    texts, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name, do_remove_numbers
+):
+    nlp = load_spacy_model(model_name)
 
-    tokens = []
-    for token in doc:
-        token_text = token.text
-        if do_include_emojis:
-            if not (token.is_alpha or is_emoji(token_text)) and do_remove_punct:
-                continue
-        else:
-            if not token.is_alpha and do_remove_punct:
-                continue
-        word = token.lemma_.lower() if do_lemmatize else token.text.lower() if do_lower else token.text
-        if do_include_emojis and is_emoji(token_text):
-            word = token_text
-        if do_remove_stop and word in stopwords_list:
-            continue
-        tokens.append(word)
-        # Per-document tokens
-    for text in texts:
-        doc_i = nlp(text)
+    all_tokens = []
+    filtered_tokens = []
+    docs = []
+    for doc in nlp.pipe(texts, batch_size=32, n_process=1):
+        docs.append(doc)
         tokens_i = []
-        for token in doc_i:
+        for token in doc:
             token_text = token.text
+            # Remove numbers if option is set
+            if do_remove_numbers and (token.like_num or token_text.isdigit()):
+                continue
             if do_include_emojis:
                 if not (token.is_alpha or is_emoji(token_text)) and do_remove_punct:
                     continue
@@ -83,8 +73,48 @@ def preprocess_text(all_text, do_lower, do_remove_punct, do_lemmatize, do_remove
             if do_remove_stop and word in stopwords_list:
                 continue
             tokens_i.append(word)
+            filtered_tokens.append(word)
         all_tokens.append(tokens_i)
-    return tokens, doc, all_tokens
+    return filtered_tokens, docs, all_tokens
+
+def preprocess_text_with_progress(
+    texts, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name, do_remove_numbers
+):
+    nlp = load_spacy_model(model_name)
+
+    all_tokens = []
+    filtered_tokens = []
+    docs = []
+    total = len(texts)
+    progress_bar = st.progress(0, text="Processing texts...")
+    for idx, doc in enumerate(nlp.pipe(texts, batch_size=32, n_process=1)):
+        docs.append(doc)
+        tokens_i = []
+        for token in doc:
+            token_text = token.text
+            # Remove numbers if option is set
+            if do_remove_numbers and (token.like_num or token_text.isdigit()):
+                continue
+            if do_include_emojis:
+                if not (token.is_alpha or is_emoji(token_text)) and do_remove_punct:
+                    continue
+            else:
+                if not token.is_alpha and do_remove_punct:
+                    continue
+            word = token.lemma_.lower() if do_lemmatize else token.text.lower() if do_lower else token.text
+            if do_include_emojis and is_emoji(token_text):
+                word = token_text
+            if do_remove_stop and word in stopwords_list:
+                continue
+            tokens_i.append(word)
+            filtered_tokens.append(word)
+        all_tokens.append(tokens_i)
+        progress_bar.progress((idx + 1) / total, text=f"Processing texts... ({idx + 1}/{total})")
+    progress_bar.empty()
+    return filtered_tokens, docs, all_tokens
+
+
+
 
 # Language selection
 st.title("Textual Data Analysis Dashboard")
@@ -104,6 +134,7 @@ if uploaded_file:
     do_lemmatize = st.sidebar.checkbox("Lemmatize words", value=False)
     do_remove_stop = st.sidebar.checkbox("Remove stopwords", value=True)
     do_include_emojis = st.sidebar.checkbox("Consider emojis as words", value=True)
+    do_remove_numbers = st.sidebar.checkbox("Remove numbers", value=True)
 
     # --- Interactive Filtering ---
     filter_columns = [col for col in df.columns if col != text_column]
@@ -116,7 +147,6 @@ if uploaded_file:
                 df = df[df[col].isin(selected)]
 
     texts = df[text_column].astype(str).tolist()
-    all_text = " ".join(texts)
 
  
 
@@ -155,39 +185,53 @@ if uploaded_file:
             mime="text/plain"
         )
 
+    # --- Main code: choose cached or progress bar version ---
+    MAX_CACHE_SIZE = 10000  # You can adjust this threshold
 
+    if len(texts) <= MAX_CACHE_SIZE:
+        tokens, docs, all_tokens = preprocess_text(
+            texts, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name, do_remove_numbers
+        )
+    else:
+        tokens, docs, all_tokens = preprocess_text_with_progress(
+            texts, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name, do_remove_numbers
+        )
 
-    tokens, doc, all_tokens = preprocess_text(
-    all_text, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name
-    )
-    filtered_tokens = tokens
-
+    
+    sentences = [sent for d in docs for sent in d.sents]
+    
 
     # Descriptive statistics
      # Show all descriptive statistics in a table
     # Lexical diversity
-    lexical_diversity = len(set(filtered_tokens)) / len(filtered_tokens) if filtered_tokens else 0
-    longest_word = max(filtered_tokens, key=len) if filtered_tokens else ""
-    vocab = set(filtered_tokens)
-    avg_word_len = sum(len(word) for word in filtered_tokens) / len(filtered_tokens) if filtered_tokens else 0
-    hapaxes = [word for word, count in Counter(filtered_tokens).items() if count == 1]
-    sentences = list(doc.sents)
-    avg_sentence_len = sum(len([t for t in sent if t.is_alpha]) for sent in sentences) / len(sentences) if sentences else 0
+    lexical_diversity = len(set(tokens)) / len(tokens) if tokens else 0
+    longest_word = max(tokens, key=len) if tokens else ""
+    vocab = set(tokens)
+    avg_word_len = sum(len(word) for word in tokens) / len(tokens) if tokens else 0
+    hapaxes = [word for word, count in Counter(tokens).items() if count == 1]
+    total_words = sum(1 for d in docs for t in d if t.is_alpha)
+    num_sentences = len(sentences)
+    avg_sentence_len = (
+        sum(len([t for t in sent if t.is_alpha]) for sent in sentences) / num_sentences
+        if num_sentences else 0
+    )
 
     stats_data = [
         {"Metric": "Number of documents", "Value": len(texts)},
-        {"Metric": "Total characters", "Value": len(all_text)},
-        {"Metric": "Total words", "Value": len([t for t in doc if t.is_alpha])},
+        {"Metric": "Total characters", "Value": sum(len(t) for t in texts)},
+        {"Metric": "Total words", "Value": total_words},
         {"Metric": "Lexical diversity (unique words / total words)", "Value": f"{lexical_diversity:.3f}"},
         {"Metric": "Longest word", "Value": f"{longest_word} ({len(longest_word)} characters)" if longest_word else ""},
         {"Metric": "Vocabulary size", "Value": len(vocab)},
         {"Metric": "Average word length", "Value": f"{avg_word_len:.2f}"},
         {"Metric": "Number of hapax legomena (unique words)", "Value": len(hapaxes)},
-        {"Metric": "Number of sentences", "Value": len(sentences)},
+        {"Metric": "Number of sentences", "Value": num_sentences},
         {"Metric": "Average sentence length (in words)", "Value": f"{avg_sentence_len:.2f}"},
     ]
     st.subheader("Descriptive Statistics Table")
     st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+
+
 
 
     # Sentence statistics
@@ -244,7 +288,7 @@ if uploaded_file:
 
     # WordCloud
     st.header("Word Cloud")
-    wc = WordCloud(width=800, height=400, background_color='white').generate(" ".join(filtered_tokens))
+    wc = WordCloud(width=800, height=400, background_color='white').generate(" ".join(tokens))
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.imshow(wc, interpolation='bilinear')
     ax.axis('off')
@@ -253,7 +297,7 @@ if uploaded_file:
 
 
     # Most common words (excluding stopwords)
-    common_words = Counter(filtered_tokens).most_common(20)
+    common_words = Counter(tokens).most_common(20)
 
     common_words_table = [{"Word": word, "Count": count} for word, count in common_words[0:10]]
     st.subheader("Top 10 Most Common Words (excluding stopwords)")
@@ -273,29 +317,30 @@ if uploaded_file:
 
     # POS Tagging statistics
     st.header("Part-of-Speech (POS) Tagging")
-    pos_counts = Counter([token.pos_ for token in doc if token.is_alpha])
+    pos_counts = Counter([token.pos_ for d in docs for token in d if token.is_alpha])
     pos_table = [{"POS": pos, "Count": count} for pos, count in pos_counts.most_common(10)]
     st.dataframe(pos_table, use_container_width=True)
 
     # Named Entity Recognition (NER)
     st.header("Named Entity Recognition (NER)")
-    if doc.ents:
-        ent_labels = [ent.label_ for ent in doc.ents]
+    all_ents = [ent for d in docs for ent in d.ents]
+    if all_ents:
+        ent_labels = [ent.label_ for ent in all_ents]
         ent_types = Counter(ent_labels)
         ent_table = [{"Entity Type": label, "Count": count} for label, count in ent_types.most_common()]
         st.dataframe(ent_table, use_container_width=True)
 
         # Show top 10 named entities by frequency
-        ent_texts = [ent.text for ent in doc.ents]
+        ent_texts = [ent.text for ent in all_ents]
         ent_texts_counter = Counter(ent_texts)
         top_entities = [{"Entity": ent, "Count": count} for ent, count in ent_texts_counter.most_common(10)]
         st.subheader("Top 10 Named Entities")
         st.dataframe(top_entities, use_container_width=True)
     else:
         st.info("No named entities found in the current selection.")
-    
-    if doc.ents:
-        ent_texts_counter = Counter([ent.text for ent in doc.ents])
+
+    if all_ents:
+        ent_texts_counter = Counter([ent.text for ent in all_ents])
         ent_texts_df = pd.DataFrame(ent_texts_counter.most_common(20), columns=["Entity", "Count"])
         if not ent_texts_df.empty:
             st.subheader("Top 20 Named Entities")
