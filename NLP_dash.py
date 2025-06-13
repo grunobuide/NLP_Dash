@@ -1,28 +1,109 @@
-import io
+import io, math, emoji, sys, re, matplotlib
 import streamlit as st
 import pandas as pd
 import spacy
-import math
-import emoji
 import altair as alt
-import re
 from collections import Counter
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import CountVectorizer
 
-st.title("Gruno's Text Analysis Dashboard")
+if sys.platform.startswith('win'):
+    matplotlib.rcParams['font.family'] = 'Segoe UI Emoji'
+elif sys.platform == 'darwin':
+    matplotlib.rcParams['font.family'] = 'Apple Color Emoji'
+else:
+    matplotlib.rcParams['font.family'] = 'Noto Color Emoji'
+
+
+
+
+
+@st.cache_resource
+def load_spacy_model(model_name):
+    nlp = spacy.load(model_name)
+    if "sentencizer" not in nlp.pipe_names:
+        nlp.add_pipe("sentencizer")
+    return nlp
+
+
+
+@st.cache_data(show_spinner="Running topic modeling...")
+def run_lda(docs_for_lda, num_topics, num_words):
+    vectorizer = CountVectorizer()
+    X = vectorizer.fit_transform(docs_for_lda)
+    lda = LatentDirichletAllocation(n_components=num_topics, random_state=42)
+    lda.fit(X)
+    topic_words = []
+    for idx, topic in enumerate(lda.components_):
+        top_features = [vectorizer.get_feature_names_out()[i] for i in topic.argsort()[:-num_words - 1:-1]]
+        topic_words.append({"Topic": f"Topic {idx+1}", "Top Words": ", ".join(top_features)})
+    return pd.DataFrame(topic_words)
+
+def is_emoji(token_text):
+    return any(char in emoji.EMOJI_DATA for char in token_text)
+
+@st.cache_data(show_spinner="Processing text...")
+def preprocess_text(all_text, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name):
+    all_tokens = []
+    all_text = " ".join(texts)
+    doc = nlp(all_text)
+
+    tokens = []
+    for token in doc:
+        token_text = token.text
+        if do_include_emojis:
+            if not (token.is_alpha or is_emoji(token_text)) and do_remove_punct:
+                continue
+        else:
+            if not token.is_alpha and do_remove_punct:
+                continue
+        word = token.lemma_.lower() if do_lemmatize else token.text.lower() if do_lower else token.text
+        if do_include_emojis and is_emoji(token_text):
+            word = token_text
+        if do_remove_stop and word in stopwords_list:
+            continue
+        tokens.append(word)
+        # Per-document tokens
+    for text in texts:
+        doc_i = nlp(text)
+        tokens_i = []
+        for token in doc_i:
+            token_text = token.text
+            if do_include_emojis:
+                if not (token.is_alpha or is_emoji(token_text)) and do_remove_punct:
+                    continue
+            else:
+                if not token.is_alpha and do_remove_punct:
+                    continue
+            word = token.lemma_.lower() if do_lemmatize else token.text.lower() if do_lower else token.text
+            if do_include_emojis and is_emoji(token_text):
+                word = token_text
+            if do_remove_stop and word in stopwords_list:
+                continue
+            tokens_i.append(word)
+        all_tokens.append(tokens_i)
+    return tokens, doc, all_tokens
 
 # Language selection
+st.title("Textual Data Analysis Dashboard")
 lang = st.selectbox("Select language of the text data", ["English", "Portuguese"])
 model_name = "en_core_web_sm" if lang == "English" else "pt_core_news_sm"
-nlp = spacy.load(model_name)
-
+nlp = load_spacy_model(model_name)
 uploaded_file = st.file_uploader("Upload a CSV file with a column of texts", type="csv")
+
+
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     text_column = st.selectbox("Select the text column", df.columns)
+       # Preprocessing options
+    st.sidebar.header("Text Preprocessing Options")
+    do_lower = st.sidebar.checkbox("Convert to lowercase", value=True)
+    do_remove_punct = st.sidebar.checkbox("Remove punctuation", value=True)
+    do_lemmatize = st.sidebar.checkbox("Lemmatize words", value=False)
+    do_remove_stop = st.sidebar.checkbox("Remove stopwords", value=True)
+    do_include_emojis = st.sidebar.checkbox("Consider emojis as words", value=True)
 
     # --- Interactive Filtering ---
     filter_columns = [col for col in df.columns if col != text_column]
@@ -37,18 +118,8 @@ if uploaded_file:
     texts = df[text_column].astype(str).tolist()
     all_text = " ".join(texts)
 
-    # Preprocessing options
-    st.header("Text Preprocessing Options")
-    do_lower = st.checkbox("Convert to lowercase", value=True)
-    do_remove_punct = st.checkbox("Remove punctuation", value=True)
-    do_lemmatize = st.checkbox("Lemmatize words", value=False)
-    do_remove_stop = st.checkbox("Remove stopwords", value=True)
-    do_include_emojis = st.checkbox("Consider emojis as words", value=True)
+ 
 
-
-
-    # spaCy processing
-    doc = nlp(all_text)
 
     # Stopword management
     st.subheader("Stopword Management")
@@ -60,17 +131,7 @@ if uploaded_file:
         if custom_stopwords.strip():
             stopwords = stopwords.union({w.strip().lower() for w in custom_stopwords.split(",")})
 
-
-
-    if st.button("Download current stopword list"):
-        stopword_list = list(stopwords)
-        stopword_str = "\n".join(sorted(stopword_list))
-        st.download_button(
-            label="Download Stopword List",
-            data=stopword_str,
-            file_name="stopwords.txt",
-            mime="text/plain"
-        )
+    
 
     uploaded_stopwords = st.file_uploader("Upload a stopword list (one word per line)", type=["txt", "csv"])
     if uploaded_stopwords:
@@ -82,44 +143,55 @@ if uploaded_file:
         stopwords = stopwords.union(uploaded_words)
         st.success(f"Loaded {len(uploaded_words)} stopwords from file.")
 
+    stopwords_list = list(stopwords) # Convert to list for cache and download
     # Tokenization and preprocessing (with emoji support)
-    def is_emoji(token_text):
-        return any(char in emoji.EMOJI_DATA for char in token_text)
 
-    tokens = []
-    for token in doc:
-        token_text = token.text
-        # Accept emoji as tokens if option is enabled, or apply normal filtering
-        if do_include_emojis:
-            if not (token.is_alpha or is_emoji(token_text)) and do_remove_punct:
-                continue
-        else:
-            if not token.is_alpha and do_remove_punct:
-                continue
-        word = token.lemma_.lower() if do_lemmatize else token.text.lower() if do_lower else token.text
-        # If it's an emoji and we are including emojis, keep as is (don't lowercase or lemmatize)
-        if do_include_emojis and is_emoji(token_text):
-            word = token_text
-        if do_remove_stop and word in stopwords:
-            continue
-        tokens.append(word)
+    if st.button("Download current stopword list"):
+        stopword_str = "\n".join(sorted(stopword_list))
+        st.download_button(
+            label="Download Stopword List",
+            data=stopword_str,
+            file_name="stopwords.txt",
+            mime="text/plain"
+        )
 
+
+
+    tokens, doc, all_tokens = preprocess_text(
+    all_text, do_lower, do_remove_punct, do_lemmatize, do_remove_stop, do_include_emojis, stopwords_list, model_name
+    )
     filtered_tokens = tokens
 
 
     # Descriptive statistics
-    st.header("Descriptive Statistics")
-    st.write(f"Number of documents: {len(texts)}")
-    st.write(f"Total characters: {len(all_text)}")
-    st.write(f"Total words: {len([t for t in doc if t.is_alpha])}")
-
+     # Show all descriptive statistics in a table
     # Lexical diversity
     lexical_diversity = len(set(filtered_tokens)) / len(filtered_tokens) if filtered_tokens else 0
-    st.write(f"Lexical diversity (unique words / total words): {lexical_diversity:.3f}")
-
-    # Longest word
     longest_word = max(filtered_tokens, key=len) if filtered_tokens else ""
-    st.write(f"Longest word: {longest_word} ({len(longest_word)} characters)")
+    vocab = set(filtered_tokens)
+    avg_word_len = sum(len(word) for word in filtered_tokens) / len(filtered_tokens) if filtered_tokens else 0
+    hapaxes = [word for word, count in Counter(filtered_tokens).items() if count == 1]
+    sentences = list(doc.sents)
+    avg_sentence_len = sum(len([t for t in sent if t.is_alpha]) for sent in sentences) / len(sentences) if sentences else 0
+
+    stats_data = [
+        {"Metric": "Number of documents", "Value": len(texts)},
+        {"Metric": "Total characters", "Value": len(all_text)},
+        {"Metric": "Total words", "Value": len([t for t in doc if t.is_alpha])},
+        {"Metric": "Lexical diversity (unique words / total words)", "Value": f"{lexical_diversity:.3f}"},
+        {"Metric": "Longest word", "Value": f"{longest_word} ({len(longest_word)} characters)" if longest_word else ""},
+        {"Metric": "Vocabulary size", "Value": len(vocab)},
+        {"Metric": "Average word length", "Value": f"{avg_word_len:.2f}"},
+        {"Metric": "Number of hapax legomena (unique words)", "Value": len(hapaxes)},
+        {"Metric": "Number of sentences", "Value": len(sentences)},
+        {"Metric": "Average sentence length (in words)", "Value": f"{avg_sentence_len:.2f}"},
+    ]
+    st.subheader("Descriptive Statistics Table")
+    st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+
+
+    # Sentence statistics
+
 
    # N-gram customization
     st.header("N-gram Analysis Options")
@@ -178,24 +250,18 @@ if uploaded_file:
     ax.axis('off')
     st.pyplot(fig)
 
-    # Vocabulary size
-    vocab = set(filtered_tokens)
-    st.write(f"Vocabulary size: {len(vocab)}")
 
-    # Average word length
-    avg_word_len = sum(len(word) for word in filtered_tokens) / len(filtered_tokens) if filtered_tokens else 0
-    st.write(f"Average word length: {avg_word_len:.2f}")
 
     # Most common words (excluding stopwords)
-    common_words = Counter(filtered_tokens).most_common(10)
-    common_words_table = [{"Word": word, "Count": count} for word, count in common_words]
+    common_words = Counter(filtered_tokens).most_common(20)
+
+    common_words_table = [{"Word": word, "Count": count} for word, count in common_words[0:10]]
     st.subheader("Top 10 Most Common Words (excluding stopwords)")
     st.dataframe(common_words_table, use_container_width=True)
 
     # Most common words (excluding stopwords)
-    common_words = Counter(filtered_tokens).most_common(20)
     common_words_df = pd.DataFrame(common_words, columns=["Word", "Count"])
-    st.subheader("Top 20 Most Common Words (Interactive)")
+    st.subheader("Top 20 Most Common Words")
     chart = alt.Chart(common_words_df).mark_bar().encode(
         x=alt.X('Word', sort='-y'),
         y='Count',
@@ -203,15 +269,7 @@ if uploaded_file:
     ).properties(width=600)
     st.altair_chart(chart, use_container_width=True)
 
-    # Hapax legomena (words that occur only once)
-    hapaxes = [word for word, count in Counter(filtered_tokens).items() if count == 1]
-    st.write(f"Number of hapax legomena (unique words): {len(hapaxes)}")
 
-    # Sentence statistics
-    sentences = list(doc.sents)
-    st.write(f"Number of sentences: {len(sentences)}")
-    avg_sentence_len = sum(len([t for t in sent if t.is_alpha]) for sent in sentences) / len(sentences) if sentences else 0
-    st.write(f"Average sentence length (in words): {avg_sentence_len:.2f}")
 
     # POS Tagging statistics
     st.header("Part-of-Speech (POS) Tagging")
@@ -248,51 +306,13 @@ if uploaded_file:
             ).properties(width=600)
             st.altair_chart(ent_chart, use_container_width=True)
 
-    # # --- Time Series Analysis ---
-    # date_columns = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col]) or "date" in col.lower() or "time" in col.lower()]
-    # if date_columns:
-    #     st.header("Time Series Analysis")
-    #     date_col = st.selectbox("Select a date/time column for time series analysis:", date_columns)
-    #     # Try to convert to datetime if not already
-    #     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    #     df_time = df.dropna(subset=[date_col])
-    #     # Group by date (day)
-    #     docs_per_day = df_time.groupby(df_time[date_col].dt.date).size()
-    #     st.subheader("Documents per Day")
-    #     st.line_chart(docs_per_day)
-    #     # Optional: Frequency of a word over time
-    #     word_freq_word = st.text_input("Track frequency of a word over time (leave blank to skip):", "")
-    #     if word_freq_word:
-    #         freq_per_day = df_time[text_column].apply(lambda x: word_freq_word in str(x).split()).groupby(df_time[date_col].dt.date).sum()
-    #         st.line_chart(freq_per_day.rename(f"Occurrences of '{word_freq_word}'"))
 
-        # --- Topic Modeling ---
+    # --- Topic Modeling ---
     st.header("Topic Modeling (LDA)")
     num_topics = st.slider("Number of topics", min_value=2, max_value=10, value=3)
     num_words = st.slider("Number of top words per topic", min_value=3, max_value=15, value=5)
-
-    # Use filtered tokens (without stopwords) to reconstruct documents for LDA
-    docs_for_lda = []
-    for doc_text in texts:
-        doc_spacy = nlp(doc_text)
-        tokens_lda = [
-            w.text.lower()
-            for w in doc_spacy
-            if w.is_alpha and (not do_remove_stop or w.text.lower() not in stopwords)
-        ]
-        docs_for_lda.append(" ".join(tokens_lda))
-
-    vectorizer = CountVectorizer()
-    X = vectorizer.fit_transform(docs_for_lda)
-    lda = LatentDirichletAllocation(n_components=num_topics, random_state=42)
-    lda.fit(X)
-
-    topic_words = []
-    for idx, topic in enumerate(lda.components_):
-        top_features = [vectorizer.get_feature_names_out()[i] for i in topic.argsort()[:-num_words - 1:-1]]
-        topic_words.append({"Topic": f"Topic {idx+1}", "Top Words": ", ".join(top_features)})
-
-    topic_words_df = pd.DataFrame(topic_words)
+    docs_for_lda = [" ".join(doc_tokens) for doc_tokens in all_tokens]
+    topic_words_df = run_lda(docs_for_lda, num_topics, num_words)
     st.dataframe(topic_words_df)
 
         # --- Topic Modeling Interactive Visualization ---

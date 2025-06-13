@@ -1,4 +1,4 @@
-# Gruno's Text Analysis Dashboard
+# Bruno Guide's Textual Data Analysis Dashboard
 
 A powerful, interactive Streamlit dashboard for exploring and analyzing text datasets in English or Portuguese.  
 Supports advanced NLP features, emoji handling, and customizable preprocessing.
